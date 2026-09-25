@@ -119,6 +119,16 @@ def main() -> int:
            "--distpath", str(dist), "--workpath", str(build_dir / "pyi"),
            "--specpath", str(build_dir)]
 
+    # 只保留真正用得到的部分。实测这些排除项能砍掉一大半体积：
+    #   onnxruntime.transformers/quantization/tools 会连带拉进 sympy、onnx 等一堆东西，
+    #   我们只调 InferenceSession；ssl/readline/tkinter/unittest 这套标准库也用不到。
+    for mod in ("tkinter", "unittest", "pydoc", "doctest", "test", "distutils",
+                "setuptools", "pip", "readline", "ssl", "sympy", "onnx",
+                "matplotlib", "scipy", "pandas", "IPython", "pytest",
+                "onnxruntime.transformers", "onnxruntime.quantization",
+                "onnxruntime.tools", "onnxruntime.training"):
+        cmd += ["--exclude-module", mod]
+
     if not args.no_bundle_model:
         repo = find_model_repo(args.model_repo)
         if repo is None:
@@ -133,16 +143,24 @@ def main() -> int:
                 "--hidden-import", "geometry",
                 "--hidden-import", "assign",
                 "--hidden-import", "onnxruntime",
-                "--collect-submodules", "onnxruntime",
                 "--add-data", f"{stage / 'runs'}{os.pathsep}captcha/runs"]
         cmd += ["--hidden-import", "PIL.Image", "--hidden-import", "numpy"]
+
+    if args.no_bundle_model:
+        cmd += ["--exclude-module", "onnxruntime", "--exclude-module", "numpy",
+                "--exclude-module", "PIL"]
+
+    if platform.system() != "Windows":
+        cmd.append("--strip")
 
     cmd.append(str(ROOT / "grab.py"))
     run(cmd, cwd=str(ROOT))
 
     # ---- 组装发布包 ----
     exe_name = f"{NAME}.exe" if platform.system() == "Windows" else NAME
-    out_dir = dist / f"{NAME}-{tag}"
+    # 轻量版单独命名：核心只有 8MB 左右，不含验证码识别
+    pkg_name = f"{NAME}-lite" if args.no_bundle_model else NAME
+    out_dir = dist / f"{pkg_name}-{tag}"
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)

@@ -56,6 +56,10 @@ jobs:
           CAPTCHA_MODEL_REPO: ${{ github.workspace }}/../click-captcha-matcher
         run: python packaging/build.py
 
+      # 另外产出一个不含识别模型的轻量版：只有抢课核心，约 8MB
+      - name: 打包（轻量版，不含识别模型）
+        run: python packaging/build.py --no-bundle-model
+
       - name: 产物自检（不需要网络、不需要账号）
         shell: bash
         run: |
