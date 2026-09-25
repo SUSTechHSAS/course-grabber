@@ -16,6 +16,8 @@ permissions:
   contents: write
 
 env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
   # 识别模型仓库（改成你自己的地址即可）
   CAPTCHA_REPO: https://github.com/SUSTechHSAS/click-captcha-matcher.git
 

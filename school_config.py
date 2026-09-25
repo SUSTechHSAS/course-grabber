@@ -31,6 +31,17 @@ from pathlib import Path
 
 __version__ = "1.0.0"
 
+# Windows 控制台默认不是 UTF-8（英文系统是 cp1252），打印中文会直接 UnicodeEncodeError。
+# 这个工具全程输出中文，所以在最早被导入的模块里把标准输出/错误强制成 UTF-8。
+# errors="replace" 是兜底：即使终端字体画不出某个字，也绝不能因此崩掉。
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+    del _stream
+
 ENV_VAR = "COURSE_GRABBER_CONFIG"
 APP_DIR = "~/.config/course-grabber"
 

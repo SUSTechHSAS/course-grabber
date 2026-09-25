@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  # Windows runner 默认 cp1252，中文输出会炸；工具本身也会自己设，这里是双保险
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
 jobs:
   test:
     name: 离线自检 (${{ matrix.os }} / py${{ matrix.python }})
