@@ -76,7 +76,18 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
+    import school_config
+except ImportError as _exc:                      # pragma: no cover
+    print(f"✗ 缺少 school_config.py: {_exc}")
+    raise SystemExit(2)
+
+try:
+    _CFG = school_config.load()
     import school_auth
+except school_config.ConfigError as _exc:
+    # 第一次运行（还没填配置）走这里：给一句人话，不要甩 import 期的 traceback
+    print(f"\n✗ {_exc}\n")
+    raise SystemExit(2)
 except ImportError as _exc:                      # pragma: no cover - 只在文件缺失时发生
     school_auth = None                              # type: ignore[assignment]
     _AUTH_IMPORT_ERROR = _exc
@@ -86,9 +97,7 @@ else:
 # --------------------------------------------------------------------------
 # 常量
 # --------------------------------------------------------------------------
-import school_config
-
-CFG = school_config.load()                 # 学校相关的一切都在这里（见 school_config.py）
+CFG = _CFG                                 # 学校相关的一切都在这里（见 school_config.py）
 
 HOST = CFG.host
 PORT = CFG.port                            # 测试时会改它（指向本地假学校）
@@ -1467,7 +1476,7 @@ def main(argv: list[str] | None = None) -> int:
     log(f"  会话来源   : {'--url 里的 token' if token else '自动登录（学号+密码）'}")
     if token:
         log(f"  token      : {token[:8]}…{token[-4:]}")
-    log(f"  目标课程   : {args.keyword}")
+    log(f"  目标课程   : {args.keyword or CFG.course.get('keyword') or '（未指定，靠 --priority 指定教学班）'}")
     log(f"  首发时刻   : {'立即' if args.now else args.at + ' (北京时间)'}")
     log(f"  模式       : {'⚠ LIVE 真实提交' if args.live else '只读预检（不加 --live 不会提交）'}")
 
