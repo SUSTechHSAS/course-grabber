@@ -1,16 +1,23 @@
 name: Release
 
-# 打 tag（v1.0.0）或手动触发，都会构建四个平台的"下载即用"包并挂到 Release 上。
-# 识别模型（另一个仓库）会在构建时 clone 下来打进可执行文件里，用户不需要装任何东西。
+# 打 tag（v1.1.0）或手动触发，都会构建四个平台的"下载即用"包并挂到 Release 上。
+# 识别库（另一个仓库）会在构建时 clone 下来编译，一起打进可执行文件。
+#
+# ⚠ 版本一致性：Release 的产物必须**恰好**是那个 tag 指向的提交构建出来的。
+#   所以：
+#     * tag 推送触发 → 签出该 tag 构建（天然一致）；
+#     * 手动触发 → 必须给一个**新**版本号，工作流会在**本次构建的提交**上创建该 tag
+#       （`gh release create --target $SHA`），并且拒绝覆盖已存在的 Release。
+#   早期吃过亏：反复用同一个 tag 手动触发，产物被换成 master HEAD 构建的新二进制，
+#   而 tag 还指着老提交 —— 别人 checkout 那个 tag 自己构建，得到的东西和发布的对不上。
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
-      tag:
-        description: "要发布/覆盖的 tag（例如 v1.0.0）；留空则只产出构建物、不建 Release"
-        required: false
-        default: ""
+      version:
+        description: "新版本号（例如 v1.1.0）。会在本次构建的提交上创建这个 tag 并发布。"
+        required: true
 
 permissions:
   contents: write
@@ -58,6 +65,12 @@ jobs:
       - name: 打包（单文件，含识别库）
         run: python packaging/build.py
 
+      - name: 记录本次构建的提交
+        shell: bash
+        run: |
+          echo "本次构建提交: $(git rev-parse HEAD)"
+          echo "触发方式: ${{ github.event_name }}  ref: ${{ github.ref }}"
+
       - name: 产物自检（不需要网络、不需要账号）
         shell: bash
         run: |
@@ -85,7 +98,7 @@ jobs:
     name: 发布
     needs: build
     # 某个平台构建失败时，其它平台照样发布（用 always 而不是依赖 build 全绿）
-    if: always() && (startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag != '')
+    if: always() && (startsWith(github.ref, 'refs/tags/') || inputs.version != '')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -99,14 +112,37 @@ jobs:
           sha256sum *.tar.gz *.zip > SHA256SUMS.txt 2>/dev/null || true
           cat SHA256SUMS.txt
 
-      - name: 建 Release 并上传
+      - name: 建 Release 并上传（保证 tag == 构建提交 == 产物）
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          VERSION: ${{ inputs.version || github.ref_name }}
+          SHA: ${{ github.sha }}
           REPO: ${{ github.repository }}
         run: |
           set -e
-          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 || \
-            gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes
-          gh release upload "$TAG" --repo "$REPO" --clobber artifacts/*.tar.gz artifacts/*.zip artifacts/SHA256SUMS.txt
-          echo "已发布: https://github.com/$REPO/releases/tag/$TAG"
+          echo "版本 $VERSION  构建提交 $SHA"
+
+          if gh release view "$VERSION" --repo "$REPO" >/dev/null 2>&1; then
+            echo "✗ Release $VERSION 已经存在。已发布的版本不允许被覆盖 ——"
+            echo "  否则 tag 指向的提交和产物就对不上了。请换一个新版本号（如 v1.1.0）。"
+            exit 1
+          fi
+          if gh api "repos/$REPO/git/refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "✗ tag $VERSION 已存在但没有对应的 Release，请人工确认后再处理。"
+            exit 1
+          fi
+
+          # --target 会把新 tag 建在**本次真正构建的那个提交**上
+          gh release create "$VERSION" --repo "$REPO" --target "$SHA" \
+            --title "$VERSION" --generate-notes
+          gh release upload "$VERSION" --repo "$REPO" \
+            artifacts/*.tar.gz artifacts/*.zip artifacts/SHA256SUMS.txt
+
+          tag_sha=$(gh api "repos/$REPO/commits/$VERSION" --jq .sha)
+          echo "tag $VERSION → $tag_sha"
+          if [ "$tag_sha" != "$SHA" ]; then
+            echo "✗ tag 指向 $tag_sha，但产物是用 $SHA 构建的 —— 不一致！"
+            exit 1
+          fi
+          echo "✅ 一致：tag、构建提交、产物三者对应同一个 commit"
+          echo "https://github.com/$REPO/releases/tag/$VERSION"
