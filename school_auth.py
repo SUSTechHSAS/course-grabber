@@ -72,10 +72,16 @@ PATH_LOGIN = CFG.path("login")
 
 DEFAULT_CREDENTIALS = str(CFG.raw.get("credentials_path")
                           or "~/.config/course-grabber/credentials.json")
-HERE = Path(__file__).resolve().parent
-DEFAULT_MODEL_DIR = Path(str(CFG.captcha.get("model_dir") or "../click-captcha-matcher"))
-if not DEFAULT_MODEL_DIR.is_absolute():
-    DEFAULT_MODEL_DIR = (HERE / DEFAULT_MODEL_DIR).resolve()
+HERE = school_config.HERE          # 打包后是"可执行文件所在目录"，不是临时解包目录
+# 识别模型的目录，优先级：配置里指定的（存在才用）→ 打包进来的 → 同级仓库
+_cfg_model_dir = Path(str(CFG.captcha.get("model_dir") or "../click-captcha-matcher"))
+if not _cfg_model_dir.is_absolute():
+    _cfg_model_dir = (HERE / _cfg_model_dir).resolve()
+_bundled = school_config.bundled_captcha_dir()
+if _bundled is not None and not (_cfg_model_dir / "solver.py").exists():
+    DEFAULT_MODEL_DIR = _bundled
+else:
+    DEFAULT_MODEL_DIR = _cfg_model_dir
 MODEL_CANDIDATES = (
     str(CFG.captcha.get("model") or "runs/w16/matcher.onnx"),
     "runs/w16/matcher.onnx",
@@ -342,8 +348,16 @@ class CaptchaSolver:
         if not self.model.exists():
             raise AuthError(f"找不到验证码模型: {self.model}\n"
                             f"  （--click-captcha-matcher-dir 指定的目录不对？）")
-        if not (self.dir / "solver.py").exists():
-            raise AuthError(f"{self.dir} 里没有 solver.py，不是 click-captcha-matcher 目录")
+        has_code = (self.dir / "solver.py").exists()
+        if not has_code:
+            # 打包版：代码模块在 PYZ 包里，磁盘上只剩权重目录
+            import importlib.util
+            try:
+                has_code = importlib.util.find_spec("solver") is not None
+            except (ImportError, ValueError):
+                has_code = False
+        if not has_code:
+            raise AuthError(f"{self.dir} 里没有 solver.py，识别模型目录不对")
         ensure_captcha_runtime(self.dir)
         if str(self.dir) not in sys.path:
             sys.path.insert(0, str(self.dir))

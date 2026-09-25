@@ -30,7 +30,31 @@
 | 会话随时可能被踢 | 自动重登录，只读请求自愈重放；**写请求绝不自动重放** |
 | 同一账号只能有一个会话 | 单实例 PID 锁，防止两个进程互相踢 |
 
+## 不想配环境？下载预编译版
+
+到 [Releases](https://github.com/SUSTechHSAS/course-grabber/releases) 下载对应平台的一键包，
+解压后直接跑：
+
+```bash
+./run.sh          # Linux / macOS
+run.bat           # Windows（双击）
+```
+
+第一次运行会自动生成 `config.json` 并告诉你该填什么。**不需要装 Python、不需要装
+onnxruntime、不需要单独下模型** —— 验证码识别模型和运行时都已经打进那一个可执行文件里了。
+
+| 平台 | 包名 |
+| --- | --- |
+| Linux x86-64 | `course-grabber-linux-x64.tar.gz` |
+| Windows x86-64 | `course-grabber-windows-x64.zip` |
+| macOS Apple Silicon | `course-grabber-macos-arm64.tar.gz` |
+| macOS Intel | `course-grabber-macos-x64.tar.gz` |
+
+> 可执行文件没有代码签名：macOS 首次运行可能要在「系统设置 → 隐私与安全性」里放行，
+> Windows 可能弹 SmartScreen，选「仍要运行」即可。不放心就用源码跑（下面那种方式）。
+
 ## 快速开始
+
 
 ```bash
 # 1) 配置（一次性）
@@ -153,6 +177,22 @@ GRAB_DEBUG_WRITES=1 python3 grab.py --live --now --window 5   # 逐发打印写�
 - 可选：验证码识别需要 `onnxruntime` + 姊妹仓库 `click-captcha-matcher`。
   本机解释器没装时会自动寻找可用的解释器（`CAPTCHA_PYTHON` 可指定）。
 - **不需要**浏览器：有凭据文件就自己登录。没有凭据时才回退去读本地浏览器的 Cookie。
+
+## 自己打包 / CI
+
+```bash
+uv venv .build-venv
+uv pip install --python .build-venv/bin/python pyinstaller onnxruntime pillow numpy
+CAPTCHA_MODEL_REPO=../click-captcha-matcher .build-venv/bin/python packaging/build.py
+# 产物在 dist/ ；加 --no-bundle-model 可以打一个不含识别模型的轻量版
+```
+
+CI（GitHub Actions）：
+
+- **push / PR** → 三个平台 × 两个 Python 版本跑离线自检，另加一个"打包冒烟"任务
+  （真实构建一次并运行产物，确保打包脚本不会悄悄坏掉）。
+- **打 tag（`v1.0.0`）** → 四个平台各构建一个单文件包，自动建 Release 并附
+  `SHA256SUMS.txt`。也可以手动 `workflow_dispatch` 触发。
 
 ## 许可
 

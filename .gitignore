@@ -12,3 +12,9 @@ __pycache__/
 rate-lab/
 probe/
 *.log
+
+# 打包产物与构建环境（由 CI 生成，不进仓库）
+dist/
+build/
+.build-venv/
+:memory:.ses

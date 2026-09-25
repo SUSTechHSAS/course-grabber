@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 离线自检 (${{ matrix.os }} / py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # 自检只用标准库：不需要装任何依赖，也不需要模型或真实账号
+      - name: 跑离线自检
+        run: python tests/test_offline.py
+        shell: bash
+
+      - name: 配置文件缺失时的提示是否友好（--help/--version 不该要求先配置）
+        run: |
+          python grab.py --version
+          python grab.py --help > /dev/null
+        shell: bash
+
+  build-smoke:
+    name: 打包冒烟（不含识别模型，仅验证打包脚本可用）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装打包依赖
+        run: python -m pip install --upgrade pip pyinstaller
+      - name: 构建
+        run: python packaging/build.py --no-bundle-model
+      - name: 产物自检
+        run: |
+          set -e
+          cd dist/course-grabber-linux-x64
+          ./course-grabber --version
+          cp config.example.json config.json
+          ./course-grabber --offline | head -5

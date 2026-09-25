@@ -1364,6 +1364,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="目标课程名（用于建白名单）；默认取 config.json 里的 course.keyword")
     p.add_argument("--force", action="store_true",
                    help="忽略单实例锁（同一账号同时只能有一个会话，跑两个会互相踢）")
+    p.add_argument("--version", action="version",
+                   version=f"course-grabber {school_config.__version__}")
     p.add_argument("--offline", action="store_true",
                    help="完全不联网，只打印将要发送的内容")
     return p.parse_args(argv)
