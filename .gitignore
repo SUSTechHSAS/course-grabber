@@ -1,0 +1,14 @@
+# 本地配置与凭据：绝对不要提交
+config.json
+credentials.json
+*.local.json
+
+# 运行产物
+.course-grabber.lock
+__pycache__/
+*.pyc
+
+# 实验记录（可能含真实账号/会话信息）
+rate-lab/
+probe/
+*.log
