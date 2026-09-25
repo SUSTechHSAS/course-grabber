@@ -127,9 +127,16 @@ jobs:
             echo "  否则 tag 指向的提交和产物就对不上了。请换一个新版本号（如 v1.1.0）。"
             exit 1
           fi
-          if gh api "repos/$REPO/git/refs/tags/$VERSION" >/dev/null 2>&1; then
-            echo "✗ tag $VERSION 已存在但没有对应的 Release，请人工确认后再处理。"
-            exit 1
+          # tag 已存在是正常的（tag 推送触发时它当然存在）——只要它正好指向
+          # 本次构建的那个提交就行；指向别的提交才是"tag 与产物对不上"。
+          if existing=$(gh api "repos/$REPO/commits/$VERSION" --jq .sha 2>/dev/null); then
+            if [ "$existing" != "$SHA" ]; then
+              echo "✗ tag $VERSION 指向 $existing，而本次构建的是 $SHA —— 拒绝发布。"
+              exit 1
+            fi
+            echo "tag 已存在且指向本次构建的提交，继续发布"
+          else
+            echo "tag 不存在，将由 gh release create --target 建在 $SHA 上"
           fi
 
           # --target 会把新 tag 建在**本次真正构建的那个提交**上
