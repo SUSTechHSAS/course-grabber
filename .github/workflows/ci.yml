@@ -53,7 +53,7 @@ jobs:
       - name: 产物自检
         run: |
           set -e
-          cd dist/course-grabber-linux-x64
+          cd dist/course-grabber-lite-linux-x64
           ./course-grabber --version
           cp config.example.json config.json
           ./course-grabber --offline | head -5
