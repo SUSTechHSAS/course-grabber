@@ -280,7 +280,7 @@ def _with_mock(script: list[dict], fn, *, guard_session: bool = False) -> None:
 
 def test_login_flow_mock() -> None:
     print("\n[5] 假学校服务端：登录协议 + 重登录策略")
-    solver, _real = get_solver()
+    solver = StubSolver()          # 假服务端只能喂假图，识别不是这两个测试的目标
     creds = A.Credentials("2026000000", "pwd-123", "test")
 
     # a) 一次通过
@@ -350,7 +350,7 @@ def test_school_wiring() -> None:
     logs: list[str] = []
     try:
         creds = A.Credentials("2026000000", "pwd-123", "test")
-        solver, _real = get_solver()
+        solver = StubSolver()
 
         # a) 只读接口 → 会话过期 → 自动重登录 → 重放成功
         school = G.School("stale-token", "JSESSIONID=OLD", "http://x/grablessons.do?token=stale-token")

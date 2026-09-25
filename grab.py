@@ -1344,9 +1344,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     g.add_argument("--relogin-gap", type=float, default=2.0,
                    help="两次自动登录之间的最小间隔秒数，默认 2")
     g.add_argument("--captcha-model-dir", default=None,
-                   help="captcha-model 目录，默认 ../captcha-model（相对本脚本）")
+                   help="识别库目录（click-captcha-matcher-rs/python），默认取配置")
     g.add_argument("--captcha-model", default=None,
-                   help="指定 onnx 权重，默认 runs/w16/matcher.onnx（README 推荐）")
+                   help="指定识别模型文件（.ccm）；默认用库内自带的 w16")
     g.add_argument("--captcha-min-margin", type=float, default=0.0,
                    help="识别置信度低于此值就换一张图而不是提交，默认 0（模型 99%%+ 够稳）")
     g.add_argument("--captcha-attempts", type=int, default=6,
@@ -1432,9 +1432,8 @@ def acquire_instance_lock(path: str = LOCK_PATH, force: bool = False) -> bool:
                 pid = int((fh.read().strip() or "0"))
         except (OSError, ValueError):
             pid = 0
-        # 锁是**自己**持有的不算冲突：ensure_captcha_runtime 会用 os.execve 换解释器
-        # 重启脚本，PID 不变 —— 重新走一遍启动流程时会看到自己刚写的锁。
-        # （只有"PID 是别人且确实是我们这个程序的实例"才拦。）
+        # 只有"PID 是别人、且确实是我们这个程序的实例"才拦。
+        # （自己持有自己写的锁不算冲突 —— 例如将来再有重启自己的逻辑。）
         if pid != os.getpid() and _pid_is_our_instance(pid):
             log(f"✗ 检测到已经有一个实例在跑（PID {pid}，锁文件 {path}）")
             log("  学校对同一账号只允许一个有效会话：再跑一个会把那个顶掉，")
@@ -1459,6 +1458,25 @@ def acquire_instance_lock(path: str = LOCK_PATH, force: bool = False) -> bool:
     return True
 
 
+def _target_already_passed(args) -> bool:
+    """目标时刻是不是已经过了（或马上就要过）。
+
+    过了就没必要再做"对齐服务器时钟"这种为精确对点服务的预检 —— 直接开打才是对的。
+    `--tomorrow` 明确表示要等明天，不算过点。
+    """
+    if args.now:
+        return True
+    if args.tomorrow:
+        return False
+    try:
+        hh, mm, ss = (int(x) for x in str(args.at).split(":"))
+    except ValueError:
+        return False
+    now = datetime.now(BEIJING)
+    target = now.replace(hour=hh, minute=mm, second=ss, microsecond=0)
+    return (target - now).total_seconds() <= 10      # 10 秒内也算"到了"
+
+
 def _chrome_cookie_into(school: School, args) -> bool:
     """读 Chrome Cookie 库并把整套 Cookie 塞进 school。失败时打印怎么办。"""
     try:
@@ -1476,18 +1494,6 @@ def _chrome_cookie_into(school: School, args) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-
-    # ---- 换解释器（本机 python3 没有 onnxruntime 时）必须在打印任何东西之前做完，
-    #      否则 os.execve 会把 banner 打两遍 ----
-    if not args.offline and not args.no_relogin and school_auth is not None:
-        cred_path = os.path.expanduser(args.credentials or school_auth.DEFAULT_CREDENTIALS)
-        if args.password or os.path.exists(cred_path):
-            try:
-                school_auth.ensure_captcha_runtime(
-                    args.captcha_model_dir or str(school_auth.DEFAULT_MODEL_DIR))
-            except school_auth.AuthError as exc:
-                log(f"✗ {exc}")
-                return 2
 
     # ---- token（有凭据时可省：登录成功后学校会发新 token）----
     token, referer = "", ""
@@ -1638,6 +1644,13 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     info(f"      会话有效（token {school.token[:8]}…{school.token[-4:]}，"
          f"本次已自动登录 {school.relogins} 次）")
+
+    # 目标时刻已经过了：剩下的预检里「对时/目录/容量」都只为「精确对点 + 挑班」服务，
+    # 此刻直接开打才值钱 —— 对时一次要 2.5 秒，比整个首发还久。
+    late = _target_already_passed(args)
+    if late:
+        log("      ⚡ 目标时刻已过：跳过对时 / 课程目录 / 容量快照，立刻开打")
+        log("        （这三项只影响「瞄准精度」和「候选排序」，不影响能不能抢到）")
     data = payload.get("data") or {}
     batch_info = data.get("electiveBatch") or {}
     batch = str(batch_info.get("code") or "")
@@ -1654,17 +1667,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         enrolled = school.enrolled_ids()
     except Exception as exc:  # noqa: BLE001
-        log(f"✗ 读取已选课程失败: {exc}")
-        return 2
-    info(f"      已选 {len(enrolled)} 个教学班，全部只读、绝不改动")
-    if not enrolled:
+        if late:                      # 过点了：读不到也照打，最终复核会兜住
+            info(f"      读取失败（{exc}），继续开打")
+            enrolled = set()
+        else:
+            log(f"✗ 读取已选课程失败: {exc}")
+            return 2
+    info(f"      已选 {len(enrolled)} 个教学班" + ("" if late else "，全部只读、绝不改动"))
+    if not enrolled and not late:
         log("      ⚠ 已选课程列表返回 0 条。若你本来有已选课程，说明学校此刻正在重排数据")
         log("        （实测 20:00 放课前后会返回「选课系统正在初始化」），该接口暂时不可信：")
         log("        「已选中就跳过」的保护和最终复核都可能失效，请以学校页面为准。")
 
     info("预检 3/5：从课程目录解析候选教学班")
     try:
-        catalog = school.catalog_candidates(code, batch, campus, args.keyword or str(CFG.course.get('keyword') or ''))
+        catalog = ([] if late else
+                   school.catalog_candidates(code, batch, campus,
+                                             args.keyword or str(CFG.course.get('keyword') or '')))
     except Exception as exc:  # noqa: BLE001
         log(f"⚠ 目录解析失败（不影响抢课，但白名单将只依赖 --priority）: {exc}")
         catalog = []
@@ -1738,8 +1757,8 @@ def main(argv: list[str] | None = None) -> int:
             log(f"\n✓ 教学班 {tc} 已在你的已选课程里 —— 无需抢课，脚本不做任何提交。")
             return 0
 
-    info("预检 4/5：容量快照")
-    for tc, lab in candidates:
+    info("预检 4/5：容量快照" + ("（已过点，跳过）" if late else ""))
+    for tc, lab in ([] if late else candidates):
         try:
             cap = school.capacity(tc, batch)
             main_txt = f"{cap.get('mainElectiveNumber')}/{cap.get('mainClassCapacity')}"
@@ -1753,7 +1772,12 @@ def main(argv: list[str] | None = None) -> int:
             info(f"      {tc} 容量查询失败: {exc}")
 
     info("预检 5/5：对齐学校服务器时钟（HTTP Date 头区间估计）")
-    offset, half_w = server_offset(school)
+    if late:
+        # 我们已经不瞄准未来某个时刻了，对时没有意义；直接按本机时间开打。
+        offset, half_w = 0.0, 0.0
+        info("      已过点：跳过一次 25 采样的对时（省约 2.5 秒）")
+    else:
+        offset, half_w = server_offset(school)
     if half_w == -2.0:
         info("      区间未收敛（有离群样本）—— 不猜偏移，按 0 处理并给足提前量")
         offset, half_w = 0.0, 300.0

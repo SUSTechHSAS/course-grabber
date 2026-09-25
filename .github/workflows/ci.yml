@@ -46,14 +46,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: 取识别库并编译
+        run: |
+          git clone --depth 1 https://github.com/SUSTechHSAS/click-captcha-matcher-rs.git ../click-captcha-matcher-rs
+          cd ../click-captcha-matcher-rs && cargo build --release
       - name: 安装打包依赖
         run: python -m pip install --upgrade pip pyinstaller
       - name: 构建
-        run: python packaging/build.py --no-bundle-model
+        run: python packaging/build.py
       - name: 产物自检
         run: |
           set -e
-          cd dist/course-grabber-lite-linux-x64
+          cd dist/course-grabber-linux-x64
           ./course-grabber --version
           cp config.example.json config.json
-          ./course-grabber --offline | head -5
+          out=$(./course-grabber --offline)
+          printf '%s\n' "$out" | head -5

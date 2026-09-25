@@ -4,7 +4,6 @@
     "config.json 已在 .gitignore 里 —— 别把它提交上去。",
     "凡是带下划线开头的键都是说明，程序不读。"
   ],
-
   "school": {
     "host": "course.example.edu.cn",
     "port": 80,
@@ -15,7 +14,6 @@
     "_time_path": "只用来读 HTTP Date 头做对时的轻量页面；留空则用站点根路径 /",
     "time_path": "/"
   },
-
   "paths": {
     "volunteer": "{base}/elective/volunteer.do",
     "capacity": "{base}/elective/teachingclass/capacity.do",
@@ -28,56 +26,68 @@
     "vcode_image": "{base}/student/vcode/image.do",
     "login": "{base}/student/check/login.do"
   },
-
   "cookies": {
     "_comment": "登录态 Cookie 名、验证码那一步下发的 Cookie 名、以及登录后应该出现的名字（缺了只告警）",
-    "session": ["JSESSIONID"],
-    "captcha": ["route", "insert_cookie"],
+    "session": [
+      "JSESSIONID"
+    ],
+    "captcha": [
+      "route",
+      "insert_cookie"
+    ],
     "expect": []
   },
-
   "password": {
     "_comment": "学校前端把密码加密后提交；这里填它用的密钥（顺序敏感）。留空数组则按明文提交。",
-    "des_keys": ["this", "password", "is"]
+    "des_keys": [
+      "this",
+      "password",
+      "is"
+    ]
   },
-
   "course": {
     "_comment": "目标课程与候选教学班。group 是冲突组（星期-节次），同组互相冲突、最多中一个；跨组会串行提交。",
     "keyword": "高等数学",
     "class_type": "FAWKC",
     "campus": "",
     "candidates": [
-      {"id": "000000000000000000000001", "label": "01班 周一3-5", "group": "星期一-3-5"},
-      {"id": "000000000000000000000002", "label": "02班 周一3-5", "group": "星期一-3-5"},
-      {"id": "000000000000000000000003", "label": "03班 周三3-5", "group": "星期三-3-5"}
+      {
+        "id": "000000000000000000000001",
+        "label": "01班 周一3-5",
+        "group": "星期一-3-5"
+      },
+      {
+        "id": "000000000000000000000002",
+        "label": "02班 周一3-5",
+        "group": "星期一-3-5"
+      },
+      {
+        "id": "000000000000000000000003",
+        "label": "03班 周三3-5",
+        "group": "星期三-3-5"
+      }
     ]
   },
-
   "captcha": {
-    "_comment": "点选验证码识别模型（另一个仓库 click-captcha-matcher）；model_dir 支持相对路径",
-    "model_dir": "../click-captcha-matcher",
-    "model": "runs/w16/matcher.onnx",
+    "_comment": "点选验证码识别库（click-captcha-matcher-rs）；模型编在 libccm 里，约 250KB",
+    "model_dir": "../click-captcha-matcher-rs/python",
     "width": 250,
     "height": 80,
     "min_margin": 0.0
   },
-
   "credentials_path": "~/.config/course-grabber/credentials.json",
-
   "pacing": {
     "_comment": "写接口限流参数。默认值来自实测：某系统滚动 1 秒最多 3 发，第 4 发会被限流并作废会话。换学校务必自己重测（用 tools/probe_rate_limit.py）。",
     "per_window": 3,
     "window": 1.0,
     "margin": 0.15,
-    "min_gap": 0.10,
+    "min_gap": 0.1,
     "overlap_wait": 0.35
   },
-
   "http": {
     "read_timeout": 15.0,
     "write_timeout": 4.0,
     "connect_timeout": 1.5
   },
-
   "timezone_offset_hours": 8
 }

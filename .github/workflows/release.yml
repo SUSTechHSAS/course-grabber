@@ -18,8 +18,8 @@ permissions:
 env:
   PYTHONUTF8: "1"
   PYTHONIOENCODING: "utf-8"
-  # 识别模型仓库（改成你自己的地址即可）
-  CAPTCHA_REPO: https://github.com/SUSTechHSAS/click-captcha-matcher.git
+  # 识别库仓库（Rust，零依赖）：构建时 clone 下来编译，产物一起打进可执行文件
+  CAPTCHA_REPO: https://github.com/SUSTechHSAS/click-captcha-matcher-rs.git
 
 jobs:
   build:
@@ -44,21 +44,19 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: 取识别模型仓库
-        run: git clone --depth 1 "$CAPTCHA_REPO" "${{ github.workspace }}/../click-captcha-matcher"
+      - name: 取识别库并编译（libccm，约 250KB，模型编在里面）
         shell: bash
+        run: |
+          set -e
+          git clone --depth 1 "$CAPTCHA_REPO" "${{ github.workspace }}/../click-captcha-matcher-rs"
+          cd "${{ github.workspace }}/../click-captcha-matcher-rs"
+          cargo build --release
 
       - name: 安装打包依赖
-        run: python -m pip install --upgrade pip pyinstaller onnxruntime pillow numpy
+        run: python -m pip install --upgrade pip pyinstaller
 
-      - name: 打包（单文件，含识别模型）
-        env:
-          CAPTCHA_MODEL_REPO: ${{ github.workspace }}/../click-captcha-matcher
+      - name: 打包（单文件，含识别库）
         run: python packaging/build.py
-
-      # 另外产出一个不含识别模型的轻量版：只有抢课核心，约 8MB
-      - name: 打包（轻量版，不含识别模型）
-        run: python packaging/build.py --no-bundle-model
 
       - name: 产物自检（不需要网络、不需要账号）
         shell: bash
@@ -72,8 +70,8 @@ jobs:
           # 不要把输出直接管给 head —— 那会让进程吃到 BrokenPipe 而"失败"
           out=$("$BIN" --offline)
           printf '%s\n' "$out" | head -5
-          # 确认识别模型确实被打进去了（跨平台用 python 量大小）
-          python -c "import os,sys; s=os.path.getsize('$BIN'); print('可执行文件 %.1f MB' % (s/1048576)); sys.exit(0 if s > 10_000_000 else 1)"
+          # 确认识别库真的被打进去了（8~9MB 量级；没有它只有 ~5MB）
+          python -c "import os,sys; s=os.path.getsize('$BIN'); print('可执行文件 %.1f MB' % (s/1048576)); sys.exit(0 if s > 6_000_000 else 1)"
 
       - uses: actions/upload-artifact@v4
         with:

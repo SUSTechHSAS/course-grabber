@@ -40,8 +40,9 @@
 run.bat           # Windows（双击）
 ```
 
-第一次运行会自动生成 `config.json` 并告诉你该填什么。**不需要装 Python、不需要装
-onnxruntime、不需要单独下模型** —— 验证码识别模型和运行时都已经打进那一个可执行文件里了。
+第一次运行会自动生成 `config.json` 并告诉你该填什么。**不需要装 Python，也不需要任何第三方
+运行时** —— 验证码识别是一个用 Rust 写的零依赖库（`libccm`，约 200KB，模型编在里面），
+已经打进那一个可执行文件；整包 **8~9 MB**（同样功能用 onnxruntime 要 39MB）。
 
 | 平台 | 包名 |
 | --- | --- |
@@ -89,7 +90,7 @@ python3 grab.py --live
 | --- | --- |
 | `--live` | 真正提交。不加就只做只读预检 |
 | `--at 20:00:00` | 出手时刻（配置时区）。已过则立刻开打，`--tomorrow` 才等到明天 |
-| `--now` | 不等了，立刻开打 |
+| `--now` | 不等了，立刻开打；目标时刻已过时也会自动进入这个模式 |
 | `--window 90` | 出手后持续尝试多少秒 |
 | `--priority 001,002` | 覆盖配置里的候选顺序（可只写 ID 后缀） |
 | `--single` | 首发只打第一优先级那一个班（默认打组内前 3 个） |
@@ -130,6 +131,21 @@ python3 grab.py --live
 | 连接挂住不回 | 2 发 / **16.1 秒** | 6 发 / **3.9 秒** |
 | 响应慢 6 秒 | 2 发 / **16.1 秒** | 6 发 / **3.9 秒** |
 | 网关 502 + HTML | 7 发 / 3.1 秒 | 9 发 / 3.6 秒 |
+
+### 目标时刻已过就直接开打（预检按需裁剪）
+
+`--at` 的时间已经过了（或 `--now`）时，脚本会自动跳过**只为"精确对点"服务的预检**：
+
+| 步骤 | 对点时 | 已过点时 |
+| --- | --- | --- |
+| 校验会话 | 做 | **做**（必须） |
+| 读已选课程（安全护栏） | 做 | **做**（40ms） |
+| 从课程目录解析候选 | 做 | 跳过（候选直接用配置里的） |
+| 容量快照 | 做 | 跳过 |
+| 对齐服务器时钟（25 次采样） | 做 | **跳过（省约 2.5 秒）** |
+
+实测：会话建立之后到写出第一发，**从 2.7 秒降到 39 毫秒**；整进程从启动到出手约 1.5~2 秒。
+放课窗口里这几秒很值钱 —— 以前为了"对时"白白等掉的时间，比整个首发还久。
 
 ### 服务端「正在初始化」时**绝不能安静下来**（2026-09 一次真实事故）
 
@@ -203,17 +219,22 @@ GRAB_DEBUG_WRITES=1 python3 grab.py --live --now --window 5   # 逐发打印写�
 ## 依赖
 
 - Python 3.11+（只用标准库；`--live` 之外的预检也是）
-- 可选：验证码识别需要 `onnxruntime` + 姊妹仓库 `click-captcha-matcher`。
-  本机解释器没装时会自动寻找可用的解释器（`CAPTCHA_PYTHON` 可指定）。
+- 验证码识别用姊妹仓库 [click-captcha-matcher-rs](https://github.com/SUSTechHSAS/click-captcha-matcher-rs)：
+  一个零依赖的 Rust 库（`libccm`），编译一次即可，**不需要 onnxruntime / numpy / Pillow**。
+  `cargo build --release` 之后把 `captcha.model_dir` 指向它的 `python/` 目录。
 - **不需要**浏览器：有凭据文件就自己登录。没有凭据时才回退去读本地浏览器的 Cookie。
 
 ## 自己打包 / CI
 
 ```bash
-uv venv .build-venv
-uv pip install --python .build-venv/bin/python pyinstaller onnxruntime pillow numpy
-CAPTCHA_MODEL_REPO=../click-captcha-matcher .build-venv/bin/python packaging/build.py
-# 产物在 dist/ ；加 --no-bundle-model 可以打一个不含识别模型的轻量版
+# 1) 先编译识别库（零依赖，只需要 cargo）
+git clone https://github.com/SUSTechHSAS/click-captcha-matcher-rs ../click-captcha-matcher-rs
+cd ../click-captcha-matcher-rs && cargo build --release && cd -
+
+# 2) 打包（只需要 pyinstaller；不再需要 onnxruntime/numpy/Pillow）
+uv venv .build-venv && uv pip install --python .build-venv/bin/python pyinstaller
+CAPTCHA_MODEL_REPO=../click-captcha-matcher-rs .build-venv/bin/python packaging/build.py
+# 产物在 dist/，约 8~9 MB
 ```
 
 CI（GitHub Actions）：

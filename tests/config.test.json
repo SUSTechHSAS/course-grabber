@@ -1,6 +1,5 @@
 {
   "_comment": "离线自检用的假配置：域名、路径、候选全是编的，不需要任何真实学校信息。位置随便填，因为测试全部跑在本地假服务端上。",
-
   "school": {
     "host": "127.0.0.1",
     "port": 80,
@@ -10,7 +9,6 @@
     "cookie_domain": "example.edu.cn",
     "time_path": "/"
   },
-
   "paths": {
     "volunteer": "{base}/elective/volunteer.do",
     "capacity": "{base}/elective/teachingclass/capacity.do",
@@ -23,44 +21,59 @@
     "vcode_image": "{base}/student/vcode/image.do",
     "login": "{base}/student/check/login.do"
   },
-
   "cookies": {
-    "session": ["JSESSIONID"],
-    "captcha": ["route", "insert_cookie"],
+    "session": [
+      "JSESSIONID"
+    ],
+    "captcha": [
+      "route",
+      "insert_cookie"
+    ],
     "expect": []
   },
-
   "password": {
-    "des_keys": ["this", "password", "is"]
+    "des_keys": [
+      "this",
+      "password",
+      "is"
+    ]
   },
-
   "course": {
     "keyword": "测试课程",
     "class_type": "TEST",
     "is_major": "1",
     "query_content": "{keyword}",
     "candidates": [
-      {"id": "000000000000000000000001", "label": "A班", "group": "星期一-3-5"},
-      {"id": "000000000000000000000002", "label": "B班", "group": "星期一-3-5"},
-      {"id": "000000000000000000000003", "label": "C班", "group": "星期一-3-5"}
+      {
+        "id": "000000000000000000000001",
+        "label": "A班",
+        "group": "星期一-3-5"
+      },
+      {
+        "id": "000000000000000000000002",
+        "label": "B班",
+        "group": "星期一-3-5"
+      },
+      {
+        "id": "000000000000000000000003",
+        "label": "C班",
+        "group": "星期一-3-5"
+      }
     ]
   },
-
   "captcha": {
-    "model_dir": "../click-captcha-matcher",
-    "model": "runs/w16/matcher.onnx",
+    "_comment": "点选验证码识别库（click-captcha-matcher-rs）；模型编在 libccm 里，约 250KB",
+    "model_dir": "../click-captcha-matcher-rs/python",
     "width": 250,
     "height": 80,
     "min_margin": 0.0
   },
-
   "credentials_path": "~/.config/course-grabber/credentials.json",
-
   "pacing": {
     "per_window": 3,
     "window": 1.0,
     "margin": 0.15,
-    "min_gap": 0.10,
+    "min_gap": 0.1,
     "overlap_wait": 0.35
   }
 }

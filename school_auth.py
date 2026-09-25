@@ -36,8 +36,8 @@
     * 配置      —— school_config.py（域名、路径、Cookie 名、密码加密密钥）
     * 密码加密  —— 本目录的 `desencode.py` / `cus_base64.py`（第三方 MIT 实现，
                    见 LICENSE）
-    * 验证码识别 —— click-captcha-matcher（`solver.py` + ONNX 权重）；
-                    需要 onnxruntime，本机解释器没装时自动换用找到的解释器
+    * 验证码识别 —— click-captcha-matcher-rs（`python/solver.py` + `libccm.so`）；
+                    模型编在库里，零第三方依赖
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ DEFAULT_CREDENTIALS = str(CFG.raw.get("credentials_path")
                           or "~/.config/course-grabber/credentials.json")
 HERE = school_config.HERE          # 打包后是"可执行文件所在目录"，不是临时解包目录
 # 识别模型的目录，优先级：配置里指定的（存在才用）→ 打包进来的 → 同级仓库
-_cfg_model_dir = Path(str(CFG.captcha.get("model_dir") or "../click-captcha-matcher"))
+_cfg_model_dir = Path(str(CFG.captcha.get("model_dir") or "../click-captcha-matcher-rs/python"))
 if not _cfg_model_dir.is_absolute():
     _cfg_model_dir = (HERE / _cfg_model_dir).resolve()
 _bundled = school_config.bundled_captcha_dir()
@@ -82,12 +82,6 @@ if _bundled is not None and not (_cfg_model_dir / "solver.py").exists():
     DEFAULT_MODEL_DIR = _bundled
 else:
     DEFAULT_MODEL_DIR = _cfg_model_dir
-MODEL_CANDIDATES = (
-    str(CFG.captcha.get("model") or "runs/w16/matcher.onnx"),
-    "runs/w16/matcher.onnx",
-    "runs/s1/matcher.onnx",
-)
-
 CAPTCHA_WIDTH = int(CFG.captcha.get("width") or 250)
 CAPTCHA_HEIGHT = int(CFG.captcha.get("height") or 80)
 WRONG_CAPTCHA = "验证码不正确"
@@ -267,112 +261,67 @@ def fetch_captcha(timeout: float = 15.0) -> CaptchaChallenge:
     return CaptchaChallenge(vtoken, cookie, image)
 
 
-def _has_onnxruntime(python: str) -> bool:
-    try:
-        proc = subprocess.run([python, "-c", "import onnxruntime"],
-                              capture_output=True, timeout=60,
-                              env=dict(os.environ, ORT_DISABLE_TELEMETRY="1"))
-        return proc.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
+def _load_solver_module(directory: Path):
+    """按**目录**加载 solver.py，不复用 sys.modules 里的同名模块。
 
-
-def find_python_with_onnxruntime(model_dir: Path) -> str | None:
-    """找一个装了 onnxruntime 的解释器。本机 python3 没装，captcha venv 里有。"""
-    os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
-    cands: list[str] = []
-    env = os.environ.get("CAPTCHA_PYTHON")
-    if env:
-        cands.append(env)
-    cands += [
-        str(model_dir / ".venv/bin/python"),
-        str(HERE / ".venv/bin/python"),
-        str(HERE.parent / "captcha/.venv/bin/python"),          # ddddocr 那套 venv
-    ]
-    # 同级目录下的任意 .venv（如 /home/kibi/Work/temp/*/.venv）
-    try:
-        cands += [str(p) for p in sorted(HERE.parent.glob("*/.venv/bin/python"))]
-    except OSError:
-        pass
-    seen: set[str] = set()
-    for c in cands:
-        if c in seen or not os.path.isfile(c) or not os.access(c, os.X_OK):
-            continue
-        seen.add(c)
-        if _has_onnxruntime(c):
-            return c
-    return None
-
-
-def ensure_captcha_runtime(model_dir: str | os.PathLike, reexec: bool = True) -> None:
-    """保证当前解释器能跑验证码模型；不行就换一个能跑的解释器重启自己。
-
-    只在真的要识别验证码时调用 —— 不用自动登录的场景完全不受影响。
-    注意：重启会让脚本从头再跑一遍，所以调用点要在打印任何东西之前。
+    实测坑：直接 `import solver` 会命中模块缓存 —— 先指向 Rust 版目录加载过一次，
+    之后即使把 model_dir 指到 onnx 版目录，拿到的还是 Rust 版那个模块。
+    打包版（模块在 PYZ 里、磁盘上没有 solver.py）才回落到普通 import。
     """
-    # onnxruntime 在 HOME 不可写时会退化成往**当前目录**写一个 `:memory:.ses`
-    # 遥测文件（实测），把项目目录搞脏；这个开关让它压根不写。必须在 import 之前设。
-    os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+    import importlib.util
+
+    path = directory / "solver.py"
+    if path.exists():
+        if str(directory) not in sys.path:
+            sys.path.insert(0, str(directory))
+        key = "_ccm_solver_" + str(abs(hash(str(directory))))
+        if key in sys.modules:
+            return sys.modules[key]
+        spec = importlib.util.spec_from_file_location(key, path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[key] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:  # noqa: BLE001
+            sys.modules.pop(key, None)
+            return None
+        return module
     try:
-        import onnxruntime  # noqa: F401
-        return
+        import solver                      # 打包进去的模块
+        return solver
     except ImportError:
-        pass
-
-    model_dir = Path(model_dir)
-    found = find_python_with_onnxruntime(model_dir)
-    script = Path(sys.argv[0] or "").resolve()
-    if found and reexec and script.is_file() and os.environ.get("GRAB_REEXEC") != "1":
-        print(f"[auth] 当前解释器没有 onnxruntime，改用 {found} 重新启动脚本", flush=True)
-        env = dict(os.environ, GRAB_REEXEC="1")
-        os.execve(found, [found, str(Path(sys.argv[0]).resolve()), *sys.argv[1:]], env)
-
-    raise AuthError(
-        "验证码模型需要 onnxruntime，但找不到可用的解释器。\n"
-        "  任选一种修复：\n"
-        "    ① 在本项目目录建虚拟环境：\n"
-        "         uv venv .venv && uv pip install --python .venv/bin/python onnxruntime pillow numpy\n"
-        "    ② 指定已有的解释器：export CAPTCHA_PYTHON=/path/to/python\n"
-        f"  （已找过：{model_dir}/.venv、{HERE}/.venv、{HERE.parent}/*/.venv）"
-        + ("" if script.is_file() else
-           "\n  注意：当前不是以脚本文件方式运行（stdin/-c），没法自动换解释器，"
-           "请把脚本存成 .py 后再跑"))
+        return None
 
 
 class CaptchaSolver:
-    """click-captcha-matcher 的生产推理封装：JPEG 字节 → 4 个点击坐标 + margin。"""
+    """验证码识别：JPEG 字节 → 4 个点击坐标 + margin。
+
+    用的是 click-captcha-matcher-rs 的 `libccm`（模型和推理一起编进约 200KB 的
+    动态库），所以**不需要 onnxruntime / numpy / Pillow** —— 单文件包因此从
+    39MB 降到 8.6MB，识别本身还快一倍。这是唯一后端，没有回退：留着回退路径
+    打包工具照样会把那几个依赖收进去，体积一点省不下来。
+    """
 
     def __init__(self, model_dir: str | os.PathLike | None = None,
                  model: str | os.PathLike | None = None,
                  min_margin: float = 0.0, threads: int = 1) -> None:
-        self.dir = Path(model_dir or DEFAULT_MODEL_DIR).expanduser().resolve()
-        if model:
-            self.model = Path(model).expanduser()
-            if not self.model.is_absolute():
-                self.model = self.dir / self.model
-        else:
-            self.model = next((self.dir / c for c in MODEL_CANDIDATES
-                               if (self.dir / c).exists()), self.dir / MODEL_CANDIDATES[0])
-        if not self.model.exists():
-            raise AuthError(f"找不到验证码模型: {self.model}\n"
-                            f"  （--click-captcha-matcher-dir 指定的目录不对？）")
-        has_code = (self.dir / "solver.py").exists()
-        if not has_code:
-            # 打包版：代码模块在 PYZ 包里，磁盘上只剩权重目录
-            import importlib.util
-            try:
-                has_code = importlib.util.find_spec("solver") is not None
-            except (ImportError, ValueError):
-                has_code = False
-        if not has_code:
-            raise AuthError(f"{self.dir} 里没有 solver.py，识别模型目录不对")
-        ensure_captcha_runtime(self.dir)
-        if str(self.dir) not in sys.path:
-            sys.path.insert(0, str(self.dir))
-        from solver import CaptchaSolver as _Solver
-
         self.min_margin = min_margin
-        self._solver = _Solver(str(self.model), min_margin=0.0, threads=threads)
+        self.backend = "native(libccm)"
+        self.dir = Path(model_dir or DEFAULT_MODEL_DIR).expanduser().resolve()
+        module = _load_solver_module(self.dir)
+        if module is None or not hasattr(module, "load_library"):
+            raise AuthError(
+                f"找不到可用的识别库: {self.dir}\n"
+                f"  这里应该有 click-captcha-matcher-rs 的 python/solver.py 与 libccm。\n"
+                f"  先构建它：cd <该仓库> && cargo build --release\n"
+                f"  或用 --captcha-model-dir 指向正确目录。")
+        try:
+            self._solver = module.CaptchaSolver(str(model) if model else None)
+            self.model = Path(module.find_library())
+        except Exception as exc:  # noqa: BLE001
+            raise AuthError(f"识别库加载失败: {exc}") from exc
 
     def solve(self, image: bytes) -> tuple[list[list[int]], float]:
         """返回 ([[x, y]] * 4, margin)。格式非法一律当识别失败抛 CaptchaRejected。"""
