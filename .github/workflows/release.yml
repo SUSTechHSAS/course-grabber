@@ -61,7 +61,7 @@ jobs:
         run: |
           set -e
           cd dist/course-grabber-${{ matrix.asset }}
-          if [ -f course-grabber.exe ]; then BIN=course-grabber.exe; else BIN=./course-grabber; fi
+          if [ -f course-grabber.exe ]; then BIN=./course-grabber.exe; else BIN=./course-grabber; fi
           chmod +x "$BIN" || true
           "$BIN" --version
           cp config.example.json config.json
