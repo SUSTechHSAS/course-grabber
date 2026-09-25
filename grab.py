@@ -2204,3 +2204,12 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         log("\n已手动中止。")
         sys.exit(130)
+    except BrokenPipeError:
+        # `grab.py --offline | head` 这种用法会把管道提前关掉。
+        # 这是用户主动的行为，不该变成一个刺眼的 traceback。
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except OSError:
+            pass
+        sys.exit(0)
