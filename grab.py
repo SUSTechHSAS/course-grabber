@@ -1247,6 +1247,11 @@ def has_slot(school: School, tc_id: str, batch: str) -> bool | None:
 
     返回 True=有空位、False=已满、None=查不到（查不到就照打，不要因为读失败而漏掉机会）。
     你在这门课属于非主选对象（isMainSelectObject=0），所以只看 nonMain 那一栏。
+
+    **0/0 一律当成"查不到"。** 2026-09-25 20:00 的教训：放课瞬间系统会进入
+    「正在初始化」，这段时间容量接口返回 total=0/used=0 —— 那是"没有数据"，
+    不是"没有空位"。旧版把它算成 0-0>0=False（已满），于是脚本在整个放课窗口里
+    安静地轮询了 56 秒，一发写请求都没发出去。
     """
     try:
         cap = school.capacity(tc_id, batch)
@@ -1257,9 +1262,12 @@ def has_slot(school: School, tc_id: str, batch: str) -> bool | None:
     if total is None or used is None:
         return None
     try:
-        return int(total) - int(used) > 0
+        total_i, used_i = int(total), int(used)
     except (TypeError, ValueError):
         return None
+    if total_i <= 0:                 # 0=接口还没数据（初始化中），不是"满"
+        return None
+    return total_i - used_i > 0
 
 
 def confirm(school: School, tc_id: str, attempts: int = 6,
@@ -1383,6 +1391,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".course-grabber.lock")
 
 
+def _pid_is_our_instance(pid: int) -> bool:
+    """判断锁文件里的 PID 是不是**本程序**的实例，而不是恰好复用了同一 PID 的无关进程。
+
+    踩过的坑：容器/系统里 PID 5 往往是常驻进程，只判断"PID 存活"会让锁永远解不开，
+    用户只会看到"已经有一个实例在跑"却怎么也找不到那个进程。
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True                     # 存在但不属于我们，按存在处理
+    except OSError:
+        return False
+    if os.name != "posix" or not os.path.isdir("/proc"):
+        return True                     # 非 Linux：拿不到 cmdline，只能相信 PID
+    try:
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", "replace")
+    except OSError:
+        return False                    # 读不到就当它已经没了
+    # 本仓库的入口与探针都可能持锁，cmdline 里认这几个关键字
+    return any(k in cmd for k in ("grab", "probe_", "python"))
+
+
 def acquire_instance_lock(path: str = LOCK_PATH, force: bool = False) -> bool:
     """单实例锁。
 
@@ -1398,16 +1432,10 @@ def acquire_instance_lock(path: str = LOCK_PATH, force: bool = False) -> bool:
                 pid = int((fh.read().strip() or "0"))
         except (OSError, ValueError):
             pid = 0
-        alive = False
-        if pid > 0:
-            try:
-                os.kill(pid, 0)
-                alive = True
-            except ProcessLookupError:
-                alive = False
-            except PermissionError:
-                alive = True
-        if alive:
+        # 锁是**自己**持有的不算冲突：ensure_captcha_runtime 会用 os.execve 换解释器
+        # 重启脚本，PID 不变 —— 重新走一遍启动流程时会看到自己刚写的锁。
+        # （只有"PID 是别人且确实是我们这个程序的实例"才拦。）
+        if pid != os.getpid() and _pid_is_our_instance(pid):
             log(f"✗ 检测到已经有一个实例在跑（PID {pid}，锁文件 {path}）")
             log("  学校对同一账号只允许一个有效会话：再跑一个会把那个顶掉，")
             log("  两个进程互相踢、互相重登录，放课瞬间两边都抢不到。")
@@ -1716,9 +1744,10 @@ def main(argv: list[str] | None = None) -> int:
             cap = school.capacity(tc, batch)
             main_txt = f"{cap.get('mainElectiveNumber')}/{cap.get('mainClassCapacity')}"
             non_txt = f"{cap.get('nonMainElectiveNumber')}/{cap.get('nonMainClassCapacity')}"
-            free = (int(cap.get("nonMainClassCapacity") or 0)
-                    - int(cap.get("nonMainElectiveNumber") or 0))
-            flag = "有空位" if free > 0 else "已满"
+            total_i = int(cap.get("nonMainClassCapacity") or 0)
+            free = total_i - int(cap.get("nonMainElectiveNumber") or 0)
+            flag = ("⚠ 无数据（系统初始化中，接口不可信）" if total_i <= 0
+                    else "有空位" if free > 0 else "已满")
             info(f"      {tc} {lab[:22]:<22} 主选 {main_txt:>8}  非主选 {non_txt:>6}  → {flag}")
         except Exception as exc:  # noqa: BLE001
             info(f"      {tc} 容量查询失败: {exc}")
@@ -1997,6 +2026,8 @@ def _retry_loop(school: School, code: str, batch: str, campus: str,
     burst_until = fire_at + args.burst
     switch_at = fire_at + args.switch_after
     deadline = fire_at + args.window
+    # 系统初始化期间谁提交都没用，这段停机不该算进"第一组多少秒没名额就换组"的计时
+    outage_since = 0.0
     sent = 0
     last_write = 0.0              # 上一发写请求的发出时刻（用来保证最小间隔）
     pace = args.interval          # 自适应节奏：被限流就退避，顺利就回到初始值
@@ -2013,7 +2044,8 @@ def _retry_loop(school: School, code: str, batch: str, campus: str,
             if not pool:
                 info(f"  冲突组 {gname} 全部被拒，换下一组")
                 break
-            if gi < len(groups) - 1 and args.switch_after > 0 and time.time() > switch_at:
+            if (gi < len(groups) - 1 and args.switch_after > 0 and time.time() > switch_at
+                    and outage_since <= 0):
                 info(f"  冲突组 {gname} 过了 {args.switch_after:.0f}s 仍没名额，轮到下一组")
                 break
             in_burst = time.time() < burst_until
@@ -2033,6 +2065,12 @@ def _retry_loop(school: School, code: str, batch: str, campus: str,
                 if not in_burst and has_slot(school, tc, batch) is False:
                     continue
                 picks.append((tc, lab))
+            if outage_since > 0 and picks:
+                # 服务端在初始化：多打没意义（每发都会被拒），但必须保持试探而且要快 ——
+                # 恢复的那一瞬间才是位子真正可抢的时刻。停机期间改成每 0.6 秒打 1 发：
+                # 反应快一倍，写请求反而更少。
+                picks = picks[:1]
+                round_gap = 0.6
             if not picks:
                 _sleep(round_gap - (time.time() - t_round), state)
                 continue
@@ -2069,6 +2107,9 @@ def _retry_loop(school: School, code: str, batch: str, campus: str,
                     # 退避上限在爆发期压到 1.5s：被限流要收敛，但放课后这几秒
                     # 不能一路退到几秒一发，否则等于放弃窗口。
                     pace = min(pace * 2.0, 1.5)
+                    if outage_since <= 0:
+                        outage_since = time.time()
+                        info("  ⚠ 服务端进入初始化/限流状态（这段时间不计入换组倒计时）")
                     info(f"  被限流/初始化中（{msg[:30]}），退避到 {pace * 1000:.0f}ms")
                 elif verdict == V_OVERLOAD:
                     # 服务器过载（5xx / 超时 / HTML 错误页）：放课窗口就那么几秒，
@@ -2076,6 +2117,11 @@ def _retry_loop(school: School, code: str, batch: str, campus: str,
                     info(f"  服务器过载（{msg[:34]}），保持节奏继续")
                 elif verdict in (V_FULL, V_WINDOW, V_UNKNOWN):
                     pace = max(args.interval, pace * 0.7)
+                    if outage_since > 0:
+                        back = time.time() - outage_since
+                        switch_at += back
+                        info(f"  ✓ 服务恢复（停机 {back:.0f}s，已从换组倒计时里扣除）")
+                        outage_since = 0.0
                 if verdict in (V_SUBMITTED, V_DUPLICATE):
                     info(f"  {tc} → {verdict} ({dt:.0f}ms) {msg[:50]}")
                     _settle(school, code, tc, state)

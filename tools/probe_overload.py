@@ -33,6 +33,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent          # tools/ 的上一级才是仓库根目录（grab.py / school_auth.py 在那）
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
 
 import grab as G  # noqa: E402
@@ -85,7 +87,7 @@ class FakeSchool:
                         self.connection.close()
                     except OSError:
                         pass
-                elif sc == "init":
+                elif sc in ("init", "init_zero_cap"):
                     self._send(200, json.dumps(
                         {"code": "0", "msg": "选课系统正在初始化,请稍候..."}).encode())
                 else:
@@ -110,8 +112,10 @@ class FakeSchool:
                         {"code": "1", "msg": "添加选课志愿成功"}).encode())
                     return
                 if path.endswith("capacity.do"):
-                    self._send(200, json.dumps({"code": "1", "data": {
-                        "nonMainClassCapacity": "2", "nonMainElectiveNumber": "0"}}).encode())
+                    data = ({"nonMainClassCapacity": "0", "nonMainElectiveNumber": "0"}
+                            if self._overloaded()
+                            else {"nonMainClassCapacity": "2", "nonMainElectiveNumber": "0"})
+                    self._send(200, json.dumps({"code": "1", "data": data}).encode())
                     return
                 if path.endswith("studentstatus.do"):
                     self._send(200, json.dumps({"code": "1"}).encode())
@@ -147,8 +151,9 @@ def run(scenario: str, bad_seconds: float, window: float) -> dict:
         school = G.School("tok", "JSESSIONID=x; _WEU=y", "http://x/grablessons.do?token=tok")
         school.code = "2026000000"
         school.pacer = G.WritePacer(per_window=3, window=1.0, margin=0.15, min_gap=0.10)
+        # burst 故意设小：让循环进入非爆发期，也就是真正会调用 has_slot 的路径
         args = G.parse_args(["--url", "http://x/y.do?token=t", "--live",
-                             "--window", str(window), "--burst", str(window),
+                             "--window", str(window), "--burst", "0.5",
                              "--interval", "1.0", "--slow", "1.0"])
         args.stagger = 0.10
         groups = [("星期三-3-5", [(TARGET, "目标班"), (OTHERS[0], "备选A"), (OTHERS[1], "备选B")])]
@@ -171,7 +176,8 @@ def run(scenario: str, bad_seconds: float, window: float) -> dict:
 
 
 SCENARIOS = [
-    ("hang", 3.0, "头 3 秒完全挂住不回（最像 20:00 真实症状）"),
+    ("hang", 3.0, "头 3 秒完全挂住不回"),
+    ("init_zero_cap", 3.0, "头 3 秒「正在初始化」+ 容量返回 0/0（真实事故现场）"),
     ("gateway502", 3.0, "头 3 秒网关 502 + HTML 错误页"),
     ("init", 3.0, "头 3 秒回「选课系统正在初始化」"),
     ("reset", 3.0, "头 3 秒连接被重置"),
@@ -204,6 +210,13 @@ def main() -> int:
         print(f"  写请求 {r['writes']} 发  首发时刻 {r['write_times'][:5]}")
         print(f"  结果: {'✅ 确认选中' if r['confirmed'] else '❌ 窗口内没成功'}"
               f"  确认耗时 {r['confirmed_after'] or '-'}s  总耗时 {r['elapsed']}s")
+
+    bad = [r for r in results if r["scenario"] == "init_zero_cap"]
+    if bad:
+        r = bad[0]
+        early = [t for t in r["write_times"] if t <= r["bad_seconds"]]
+        print(f"\n[回归] 停机期间（前 {r['bad_seconds']:.0f}s）发出的写请求: {len(early)} 发 "
+              f"→ {'✅ 没有哑掉' if len(early) >= 3 else '❌ 又哑了（0/0 被当成已满）'}")
 
     print("\n" + "=" * 78)
     print("  汇总")

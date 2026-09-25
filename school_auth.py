@@ -111,6 +111,14 @@ class LoginUnavailable(AuthError):
     """网络/协议/在线人数上限等临时问题 —— 退避后重试。"""
 
 
+class AuthServiceDown(LoginUnavailable):
+    """认证服务本身不可用（实测放课瞬间会返回 `#E2140600091 认证失败`）。
+
+    这不是凭据或流程有问题，而是服务端在重排数据。它很短暂（实测约 20 秒），
+    所以不该消耗自动重登录的次数配额，也不该让脚本以为"救不回来了"而收工。
+    """
+
+
 # ==========================================================================
 # 一、凭据（默认路径见 config.json 的 credentials_path，建议 0600）
 # ==========================================================================
@@ -503,6 +511,8 @@ class Login:
             raise BadCredentials(f"学号或密码不正确（HTTP {status}）: {msg or hay[:80]}")
         if code == "3" or WRONG_CAPTCHA in hay:
             raise CaptchaRejected(msg or "验证码不正确")
+        if "认证失败" in hay or code.startswith("#"):
+            raise AuthServiceDown(f"认证服务暂时不可用（code={code}）: {msg or hay[:60]}")
         if code == "4" or any(w in hay for w in ONLINE_LIMIT_HINTS):
             raise LoginUnavailable(f"在线人数超过上限，稍后再试: {msg}")
         raise LoginUnavailable(f"登录被拒（HTTP {status} code={code}）: {msg or hay[:80]}")
@@ -566,6 +576,14 @@ class ReloginManager:
             self.history.append((time.time(), False, str(exc)))
             self.log(f"[auth] ✗ {self.fatal}")
             self.log("[auth]   请核对凭据文件；脚本不会再用错误密码重试（避免账号被锁）。")
+            return None
+        except AuthServiceDown as exc:
+            # 服务端认证自己在重排数据 —— 不消耗次数配额，下一轮再试
+            self.attempts -= 1
+            self.last_at = 0.0
+            self.history.append((time.time(), False, str(exc)))
+            self.log(f"[auth] ⚠ {exc}")
+            self.log("[auth]   这是服务端的问题（放课瞬间常见），不消耗重登录次数，稍后自动重试")
             return None
         except AuthError as exc:
             self.history.append((time.time(), False, str(exc)))

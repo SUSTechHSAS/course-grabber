@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent          # tools/ 的上一级才是仓库根目录（grab.py / school_auth.py 在那）
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
 
 import school_auth as A          # noqa: E402

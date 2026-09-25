@@ -385,6 +385,76 @@ def test_school_wiring() -> None:
         mock.close()
 
 
+
+# --------------------------------------------------------------------------
+def test_init_outage_keeps_firing() -> None:
+    """回归测试：学校初始化期间容量返回 0/0，脚本绝不能因此静默。
+
+    2026-09-25 20:00 的真实事故：初始化期间容量接口返回 total=0/used=0，
+    旧版把它算成 0-0>0=False（"已满"），于是脚本在放课窗口里安静地轮询了 56 秒，
+    一发写请求都没发出去。这个测试把那个场景固定下来。
+    """
+    print("\n[7] 回归：初始化期间（容量 0/0）必须继续发写请求")
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import grab as G
+
+    writes: list[float] = []
+    t0 = time.time()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def _send(self, body: bytes) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):                      # noqa: N802
+            n = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(n)
+            path = self.path.split("?")[0]
+            if path.endswith("volunteer.do"):
+                writes.append(time.time() - t0)
+                self._send(json.dumps({"code": "0",
+                                       "msg": "选课系统正在初始化,请稍候..."}).encode())
+            elif path.endswith("capacity.do"):
+                # 初始化中的真实行为：没有数据，返回 0/0
+                self._send(json.dumps({"code": "1", "data": {
+                    "nonMainClassCapacity": "0", "nonMainElectiveNumber": "0"}}).encode())
+            else:
+                self._send(b'{"code": "1"}')
+
+        do_GET = do_POST
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    httpd.daemon_threads = True
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    old_host, old_port = G.HOST, G.PORT
+    G.HOST, G.PORT = "127.0.0.1", httpd.server_address[1]
+    try:
+        school = G.School("tok", "JSESSIONID=x", "http://x/y.do?token=tok")
+        school.code = "2026000000"
+        school.pacer = G.WritePacer(per_window=3, window=1.0, margin=0.15, min_gap=0.10)
+        args = G.parse_args(["--url", "http://x/y.do?token=t", "--live",
+                             "--window", "2.5", "--burst", "0.3",
+                             "--interval", "1.0", "--slow", "1.0"])
+        groups = [("星期一-3-5", [("000000000000000000000001", "A班"),
+                                  ("000000000000000000000002", "B班")])]
+        G._retry_loop(school, "2026000000", "BATCH1", "01", groups, G.State(), args, t0)
+    finally:
+        G.HOST, G.PORT = old_host, old_port
+        httpd.shutdown()
+    check("停机期间仍在写（不是安静地轮询）", len(writes) >= 2,
+          f"{len(writes)} 发 @ {[round(w, 2) for w in writes[:5]]}")
+
 def main() -> int:
     print("=" * 72)
     print("  离线自检（不联网、不需要真实账号）")
@@ -395,6 +465,7 @@ def main() -> int:
     test_session_shape()
     test_login_flow_mock()
     test_school_wiring()
+    test_init_outage_keeps_firing()
     print("\n" + "=" * 72)
     print(f"  通过 {PASS}   失败 {FAIL}")
     print("=" * 72)
